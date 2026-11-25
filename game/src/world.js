@@ -1,242 +1,199 @@
-// Sizzle & Serve — the kitchen's rules and state, with no drawing and no browser in it:
-// tickets arrive on the order board, ingredients route through the grill or the chopping
-// board, the plate fills layer by layer, and serving the targeted ticket pays its price
-// plus a speed tip. step() advances one fixed step; the action methods return event flags
-// so the caller can play sounds and announcements without the world knowing about them.
+// Game state & rules for Sizzle & Serve — Rush Kitchen 2.5D.
+// One job: own the simulation (orders, stations, plate, score, clock) and
+// expose intent-level actions. No drawing, no DOM — this module is unit
+// testable in plain Node, which is how the logic was verified.
 
 import {
-  INGREDIENTS, MAX_ORDERS, MAX_STRIKES, RECIPES, SHIFT_SECONDS,
-  dayGoal, ingredientById, orderPatience, spawnInterval,
+  SHIFT_SECONDS, MAX_STRIKES, MAX_ORDERS, GRILL_SECONDS, CHOP_SECONDS,
+  BASE_POINTS_PER_ITEM, INGREDIENT_BY_ID, RECIPE_BY_ID, dayConfig, recipesForDay,
 } from './config.js';
-import { pickRandom } from './random.js';
+import { mulberry32, pick } from './random.js';
 
-export const EVENT_SERVED = 1;
-export const EVENT_EXPIRED = 2;
-export const EVENT_WRONG = 4;
-export const EVENT_STATION_DONE = 8;
-export const EVENT_DAY_CLEAR = 16;
-export const EVENT_GAME_OVER = 32;
+export const SCREEN = { TITLE: 'title', PLAY: 'play', PAUSED: 'paused', END: 'end' };
 
-/** Two ingredient lists hold the same dish when every item matches in count. */
-export function sameDish(plateItems, recipeItems) {
-  if (plateItems.length !== recipeItems.length) return false;
-  const counts = new Map();
-  for (const id of recipeItems) counts.set(id, (counts.get(id) ?? 0) + 1);
-  for (const id of plateItems) {
-    const left = (counts.get(id) ?? 0) - 1;
-    if (left < 0) return false;
-    counts.set(id, left);
+export function sameDish(a, b) {
+  if (a.length !== b.length) return false;
+  const count = new Map();
+  for (const id of a) count.set(id, (count.get(id) || 0) + 1);
+  for (const id of b) {
+    const n = count.get(id) || 0;
+    if (n === 0) return false;
+    count.set(id, n - 1);
   }
   return true;
 }
 
-/** Recipes orderable on a given day, in menu order. */
-export function menuForDay(day) {
-  return RECIPES.filter((recipe) => recipe.fromDay <= day);
-}
-
-export function createWorld(random) {
-  const state = {
+export function createWorld(seed = 7) {
+  return {
+    screen: SCREEN.TITLE,
+    rng: mulberry32(seed),
     day: 1,
+    cfg: dayConfig(1),
     score: 0,
-    served: 0,
-    strikes: 0,
     combo: 0,
     bestCombo: 0,
-    shiftLeft: SHIFT_SECONDS,
-    orders: [],
-    plate: [],
-    grill: { item: null, progress: 0, needed: 0, ready: false },
-    board: { item: null, progress: 0, needed: 0, ready: false },
-    targetIndex: 0,
-    spawnTimer: 0,
-    message: '',
-    messageTime: 0,
-    lastTip: 0,
-    over: false,
-    dayClear: false,
+    strikes: 0,
+    served: 0,
+    lost: 0,
+    timeLeft: SHIFT_SECONDS,
+    orders: [],            // {id, recipeId, patience, patienceMax, targeted}
+    nextOrderId: 1,
+    spawnIn: 0,
+    plate: [],             // ingredient ids, bottom of the stack first
+    grill: null,           // {ingredientId, t, total, ready}
+    board: null,           // {ingredientId, t, total, ready}
+    chefStationX: 0.5,     // 0..1 along the kitchen, render-only hint
+    toast: null,           // {text, t}
+    lastEvent: null,       // EVENT_* string for audio / announcements
+    endReason: null,       // 'goal' | 'closed' | 'time'
+    dayCleared: false,
+    elapsed: 0,
   };
-
-  function stationFor(ingredient) {
-    if (ingredient.prep === 'grill') return state.grill;
-    if (ingredient.prep === 'board') return state.board;
-    return null;
-  }
-
-  function spawnOrder() {
-    if (state.orders.length >= MAX_ORDERS) return;
-    // Prefer a dish nobody is already waiting for, so the board reads as a real rush
-    // of different customers; only repeat a recipe when the menu offers no other.
-    const menu = menuForDay(state.day);
-    const fresh = menu.filter((recipe) => !state.orders.some((order) => order.recipe.id === recipe.id));
-    const recipe = pickRandom(random, fresh.length > 0 ? fresh : menu);
-    const patience = orderPatience(state.day, random);
-    state.orders.push({ recipe, patience, patienceMax: patience });
-    if (state.targetIndex >= state.orders.length) state.targetIndex = 0;
-  }
-
-  function reset(day) {
-    state.day = day;
-    state.score = 0;
-    state.served = 0;
-    state.strikes = 0;
-    state.combo = 0;
-    state.bestCombo = 0;
-    state.shiftLeft = SHIFT_SECONDS;
-    state.orders = [];
-    state.plate = [];
-    state.grill = { item: null, progress: 0, needed: 0, ready: false };
-    state.board = { item: null, progress: 0, needed: 0, ready: false };
-    state.targetIndex = 0;
-    state.spawnTimer = 0.4;
-    state.message = '';
-    state.messageTime = 0;
-    state.lastTip = 0;
-    state.over = false;
-    state.dayClear = false;
-    spawnOrder();
-    spawnOrder();
-  }
-
-  /** Send the next day in with the score banked: the caller keeps the running total. */
-  function nextDay() {
-    const banked = state.score;
-    const servedTotal = state.served;
-    reset(state.day + 1);
-    state.score = banked;
-    state.served = servedTotal;
-  }
-
-  /**
-   * Click an ingredient tile. A prep ingredient goes to its station (when free); an
-   * instant one lands straight on the plate. Returns 'plate', 'grill', 'board',
-   * 'busy' (station occupied) or 'full' (plate already holds 5 layers).
-   */
-  function addIngredient(id) {
-    const ingredient = ingredientById(id);
-    if (ingredient === null || state.over) return 'busy';
-    const station = stationFor(ingredient);
-    if (station !== null) {
-      if (station.item !== null) return 'busy';
-      station.item = id;
-      station.progress = 0;
-      station.needed = ingredient.prepSeconds;
-      station.ready = false;
-      return ingredient.prep;
-    }
-    if (state.plate.length >= 5) return 'full';
-    state.plate.push(id);
-    return 'plate';
-  }
-
-  /** Move a finished station item onto the plate; false while it is still cooking. */
-  function collectStation(which) {
-    const station = which === 'grill' ? state.grill : state.board;
-    if (station.item === null || !station.ready) return false;
-    if (state.plate.length >= 5) return false;
-    state.plate.push(station.item);
-    station.item = null;
-    station.progress = 0;
-    station.ready = false;
-    return true;
-  }
-
-  function trashPlate() {
-    state.plate = [];
-    state.combo = 0;
-  }
-
-  function selectOrder(index) {
-    if (index >= 0 && index < state.orders.length) state.targetIndex = index;
-  }
-
-  /**
-   * Serve the plate to the targeted ticket. On a match: price + tip (up to +50% for a
-   * full patience bar) times the combo multiplier (×1 + 0.1 per combo step, capped ×2).
-   * On a mismatch the plate stays but the combo breaks.
-   */
-  function servePlate() {
-    const order = state.orders[state.targetIndex];
-    if (!order || state.plate.length === 0) return 0;
-    if (!sameDish(state.plate, order.recipe.items)) {
-      state.combo = 0;
-      state.message = 'That plate does not match the ticket!';
-      state.messageTime = 2.2;
-      return EVENT_WRONG;
-    }
-    const tip = Math.round(order.recipe.price * 0.5 * (order.patience / order.patienceMax));
-    const multiplier = 1 + Math.min(1, state.combo * 0.1);
-    const earned = Math.round((order.recipe.price + tip) * multiplier);
-    state.lastTip = tip;
-    state.score += earned;
-    state.served += 1;
-    state.combo += 1;
-    state.bestCombo = Math.max(state.bestCombo, state.combo);
-    state.message = `Served ${order.recipe.name}! +${earned} pts`;
-    state.messageTime = 2.2;
-    state.plate = [];
-    state.orders.splice(state.targetIndex, 1);
-    if (state.targetIndex >= state.orders.length) state.targetIndex = Math.max(0, state.orders.length - 1);
-    return EVENT_SERVED;
-  }
-
-  function stepStation(station, dt, events) {
-    if (station.item === null || station.ready) return events;
-    station.progress += dt;
-    if (station.progress >= station.needed) {
-      station.progress = station.needed;
-      station.ready = true;
-      return events | EVENT_STATION_DONE;
-    }
-    return events;
-  }
-
-  /** One fixed step of service: timers, stations, ticket patience and the shift clock. */
-  function step(dt) {
-    if (state.over || state.dayClear) return 0;
-    let events = 0;
-    state.shiftLeft = Math.max(0, state.shiftLeft - dt);
-    if (state.messageTime > 0) state.messageTime = Math.max(0, state.messageTime - dt);
-
-    events = stepStation(state.grill, dt, events);
-    events = stepStation(state.board, dt, events);
-
-    state.spawnTimer -= dt;
-    if (state.spawnTimer <= 0) {
-      spawnOrder();
-      state.spawnTimer = spawnInterval(state.day, random);
-    }
-
-    for (let index = state.orders.length - 1; index >= 0; index -= 1) {
-      const order = state.orders[index];
-      order.patience -= dt;
-      if (order.patience > 0) continue;
-      state.orders.splice(index, 1);
-      state.strikes += 1;
-      state.combo = 0;
-      state.message = `${order.recipe.name} walked out! Strike ${state.strikes}/${MAX_STRIKES}`;
-      state.messageTime = 2.4;
-      events |= EVENT_EXPIRED;
-      if (state.targetIndex >= state.orders.length) state.targetIndex = Math.max(0, state.orders.length - 1);
-    }
-
-    if (state.strikes >= MAX_STRIKES) {
-      state.over = true;
-      events |= EVENT_GAME_OVER;
-    } else if (state.shiftLeft <= 0) {
-      if (state.score >= dayGoal(state.day)) {
-        state.dayClear = true;
-        events |= EVENT_DAY_CLEAR;
-      } else {
-        state.over = true;
-        events |= EVENT_GAME_OVER;
-      }
-    }
-    return events;
-  }
-
-  reset(1);
-  return { state, reset, nextDay, addIngredient, collectStation, trashPlate, selectOrder, servePlate, step, spawnOrder };
 }
 
-export { INGREDIENTS };
+export function startDay(world, day) {
+  world.day = day;
+  world.cfg = dayConfig(day);
+  world.timeLeft = SHIFT_SECONDS;
+  world.orders = [];
+  world.plate = [];
+  world.grill = null;
+  world.board = null;
+  world.strikes = 0;
+  world.spawnIn = 0;
+  world.endReason = null;
+  world.dayCleared = false;
+  world.screen = SCREEN.PLAY;
+  spawnOrder(world);
+  spawnOrder(world);
+}
+
+function spawnOrder(world) {
+  if (world.orders.length >= MAX_ORDERS) return;
+  const menu = recipesForDay(world.day);
+  // Prefer a dish not already on the pass so the board stays readable.
+  const fresh = menu.filter((r) => !world.orders.some((o) => o.recipeId === r.id));
+  const recipe = pick(world.rng, fresh.length ? fresh : menu);
+  world.orders.push({
+    id: world.nextOrderId++,
+    recipeId: recipe.id,
+    patience: world.cfg.patience,
+    patienceMax: world.cfg.patience,
+    targeted: world.orders.length === 0,
+  });
+}
+
+export function targetOrder(world, orderId) {
+  for (const o of world.orders) o.targeted = o.id === orderId;
+}
+
+export function targetedOrder(world) {
+  return world.orders.find((o) => o.targeted) || world.orders[0] || null;
+}
+
+// Clicking an ingredient tile: grill/board items route to their station
+// first; everything else lands straight on the plate.
+export function addIngredient(world, ingredientId) {
+  const ing = INGREDIENT_BY_ID[ingredientId];
+  if (!ing || world.screen !== SCREEN.PLAY) return 'EVENT_NONE';
+  if (ing.station === 'grill') {
+    if (world.grill) { world.toast = { text: 'Grill is busy!', t: 1.6 }; return 'EVENT_BUSY'; }
+    world.grill = { ingredientId, t: 0, total: GRILL_SECONDS, ready: false };
+    world.chefStationX = 0.22;
+    return 'EVENT_SIZZLE';
+  }
+  if (ing.station === 'board') {
+    if (world.board) { world.toast = { text: 'Board is busy!', t: 1.6 }; return 'EVENT_BUSY'; }
+    world.board = { ingredientId, t: 0, total: CHOP_SECONDS, ready: false };
+    world.chefStationX = 0.48;
+    return 'EVENT_CHOP';
+  }
+  world.plate.push(ingredientId);
+  world.chefStationX = 0.78;
+  return 'EVENT_POP';
+}
+
+// Clicking a station collects its finished item onto the plate.
+export function collectStation(world, which) {
+  const st = which === 'grill' ? world.grill : world.board;
+  if (!st) return 'EVENT_NONE';
+  if (!st.ready) { world.toast = { text: 'Not ready yet…', t: 1.2 }; return 'EVENT_BUSY'; }
+  world.plate.push(st.ingredientId);
+  if (which === 'grill') world.grill = null; else world.board = null;
+  world.chefStationX = 0.78;
+  return 'EVENT_POP';
+}
+
+export function trashPlate(world) {
+  if (!world.plate.length) return 'EVENT_NONE';
+  world.plate = [];
+  world.combo = 0;
+  return 'EVENT_TRASH';
+}
+
+export function serve(world) {
+  if (!world.plate.length) { world.toast = { text: 'The plate is empty!', t: 1.4 }; return 'EVENT_ERROR'; }
+  const target = targetedOrder(world);
+  const match = (target && sameDish(world.plate, RECIPE_BY_ID[target.recipeId].items))
+    ? target
+    : world.orders.find((o) => sameDish(world.plate, RECIPE_BY_ID[o.recipeId].items));
+  if (!match) {
+    world.combo = 0;
+    world.toast = { text: 'That plate does not match the ticket!', t: 1.8 };
+    return 'EVENT_ERROR';
+  }
+  const recipe = RECIPE_BY_ID[match.recipeId];
+  const tip = Math.round(20 * (match.patience / match.patienceMax));
+  const base = recipe.items.length * BASE_POINTS_PER_ITEM;
+  world.combo += 1;
+  world.bestCombo = Math.max(world.bestCombo, world.combo);
+  const gained = Math.round((base + tip) * (1 + 0.25 * (world.combo - 1)));
+  world.score += gained;
+  world.served += 1;
+  world.orders = world.orders.filter((o) => o.id !== match.id);
+  if (world.orders.length && !world.orders.some((o) => o.targeted)) world.orders[0].targeted = true;
+  world.plate = [];
+  world.toast = { text: `Served ${recipe.name}! +${gained}`, t: 1.8 };
+  world.chefStationX = 0.9;
+  return 'EVENT_SERVED';
+}
+
+function endDay(world, reason) {
+  world.screen = SCREEN.END;
+  world.endReason = reason;
+  world.dayCleared = world.score >= world.cfg.goal;
+}
+
+export function update(world, dt) {
+  world.elapsed += dt;
+  if (world.toast) { world.toast.t -= dt; if (world.toast.t <= 0) world.toast = null; }
+  if (world.screen !== SCREEN.PLAY) return;
+
+  world.timeLeft -= dt;
+  if (world.timeLeft <= 10.5 && world.timeLeft + dt > 10.5) world.lastEvent = 'EVENT_TICK';
+  if (world.timeLeft <= 0) { world.timeLeft = 0; endDay(world, world.score >= world.cfg.goal ? 'goal' : 'time'); return; }
+
+  for (const st of [world.grill, world.board]) {
+    if (st && !st.ready) {
+      st.t += dt;
+      if (st.t >= st.total) { st.ready = true; world.lastEvent = 'EVENT_DING'; }
+    }
+  }
+
+  world.spawnIn -= dt;
+  if (world.spawnIn <= 0) { spawnOrder(world); world.spawnIn = world.cfg.spawnEvery; }
+
+  for (const o of [...world.orders]) {
+    o.patience -= dt;
+    if (o.patience <= 0) {
+      world.orders = world.orders.filter((x) => x.id !== o.id);
+      world.strikes += 1;
+      world.lost += 1;
+      world.combo = 0;
+      world.toast = { text: 'Ticket expired — strike!', t: 1.8 };
+      world.lastEvent = 'EVENT_STRIKE';
+      if (world.strikes >= MAX_STRIKES) { endDay(world, 'closed'); return; }
+    }
+  }
+  if (world.orders.length && !world.orders.some((o) => o.targeted)) world.orders[0].targeted = true;
+}

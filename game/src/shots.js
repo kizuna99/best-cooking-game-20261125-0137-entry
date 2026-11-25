@@ -1,72 +1,53 @@
-// Sizzle & Serve — the screenshot scenes behind ?shot=start|play|end. Each scene builds a
-// real kitchen state with the world's own actions (ingredients routed through stations,
-// layers stacked on the plate, tickets ticking down), so every screenshot is a frame the
-// game itself can show, and the same seed always stages the same frame.
+// Deterministic screenshot scenes (?shot=start|play|rush|end&seed=7).
+// One job: stage a frozen, representative frame of the real game so the
+// screenshots are honest renders of the shipped code — same world, same
+// renderer, just arranged mid-service instead of played live.
 
-import { STEP } from './config.js';
-import { SCREEN_CLEAR, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+import { SCREEN, startDay } from './world.js';
 
-/** Advance the world by whole fixed steps, letting stations cook and tickets age. */
-function runSteps(world, seconds) {
-  const steps = Math.round(seconds / STEP);
-  for (let index = 0; index < steps; index += 1) world.step(STEP);
+function ticket(world, recipeId, patience, patienceMax, targeted) {
+  world.orders.push({ id: world.nextOrderId++, recipeId, patience, patienceMax, targeted });
 }
 
-/**
- * Stage the busy mid-service moment the cover needs: three tickets on the board, a patty
- * sizzling on the grill, a chopped tomato already plated, and a Classic Sizzle Burger
- * mid-assembly on the pass with its bun and cheese stacked.
- */
-function stagePlayScene(world) {
-  world.reset(1);
-  world.spawnOrder();
-  runSteps(world, 2.0);
-  // Grill a patty and chop a tomato the way a player would: tile first, station second.
-  world.addIngredient('patty');
-  world.addIngredient('tomato');
-  runSteps(world, 3.2); // both stations finish (patty 3.0s, tomato 1.6s)
-  world.collectStation('board'); // chopped tomato onto the plate
-  world.collectStation('grill'); // grilled patty onto the plate
-  world.addIngredient('bun');
-  // A fish goes on the grill so the station reads mid-cook, not idle.
-  world.addIngredient('fish');
-  runSteps(world, 1.3); // grill mid-progress, tickets aged, shift timer visibly drained
-  // Target the Garden Crunch Burger ticket: the plate (tomato, patty, bun) is that
-  // dish mid-assembly, one lettuce away from a plate ready to serve.
-  const gardenIndex = world.state.orders.findIndex((order) => order.recipe.id === 'garden');
-  world.state.targetIndex = gardenIndex >= 0 ? gardenIndex : 0;
-  world.state.combo = 2;
-  world.state.score = 96;
-  world.state.served = 2;
-  world.state.message = '';
-  world.state.messageTime = 0;
-  return { screen: SCREEN_PLAY, best: 0 };
-}
-
-/** The title scene: a stocked kitchen behind the welcome panel, tickets already pinned. */
-function stageStartScene(world) {
-  world.reset(1);
-  world.spawnOrder();
-  runSteps(world, 1.0);
-  world.addIngredient('fish');
-  runSteps(world, 1.2);
-  return { screen: SCREEN_TITLE, best: 0 };
-}
-
-/** The end scene: a cleared day — goal reached, score banked, next-day panel up. */
-function stageEndScene(world) {
-  const scene = stagePlayScene(world);
-  void scene;
-  world.state.score = 342;
-  world.state.served = 7;
-  world.state.bestCombo = 4;
-  world.state.dayClear = true;
-  return { screen: SCREEN_CLEAR, best: 342 };
-}
-
-/** Set `world` to the named scene (start, play or end; any other name is start). */
-export function stageShot(name, world) {
-  if (name === 'play') return stagePlayScene(world);
-  if (name === 'end') return stageEndScene(world);
-  return stageStartScene(world);
+export function stageShot(world, name) {
+  world.elapsed = 2.4; // fixed steam/bob phase
+  if (name === 'start') {
+    startDay(world, 1);
+    world.screen = SCREEN.TITLE;
+    return;
+  }
+  if (name === 'end') {
+    startDay(world, 1);
+    world.score = 236; world.served = 5; world.lost = 1;
+    world.bestCombo = 3; world.combo = 0;
+    world.screen = SCREEN.END; world.endReason = 'goal'; world.dayCleared = true;
+    return;
+  }
+  // 'play' (cover) and 'rush': mid-service, dish mid-assembly, plate ready.
+  startDay(world, 1);
+  world.orders = [];
+  if (name === 'rush') {
+    world.score = 248; world.combo = 3; world.bestCombo = 3; world.served = 4;
+    world.timeLeft = 107;
+    ticket(world, 'fisher', 21, 46, true);
+    ticket(world, 'double', 33, 46, false);
+    ticket(world, 'sunrise', 40, 46, false);
+    world.plate = ['bun', 'fish', 'cheese', 'lettuce']; // Fisher's Melt, ready to serve
+    world.grill = { ingredientId: 'patty', t: 3, total: 3, ready: true };
+    world.board = { ingredientId: 'tomato', t: 1.1, total: 2, ready: false };
+    world.chefStationX = 0.9;
+    world.toast = { text: "Fisher's Melt ready — hit SERVE!", t: 99 };
+  } else {
+    world.score = 136; world.combo = 2; world.bestCombo = 2; world.served = 2;
+    world.timeLeft = 144;
+    ticket(world, 'garden', 30, 46, true);
+    ticket(world, 'fisher', 38, 46, false);
+    ticket(world, 'sunrise', 44, 46, false);
+    world.plate = ['bun', 'patty', 'tomato']; // Garden Crunch mid-assembly (lettuce missing)
+    world.grill = { ingredientId: 'fish', t: 1.8, total: 3, ready: false };
+    world.board = { ingredientId: 'tomato', t: 2, total: 2, ready: true };
+    world.chefStationX = 0.48;
+    world.toast = { text: 'Tomato chopped — click the board!', t: 99 };
+  }
+  world.screen = SCREEN.PLAY;
 }

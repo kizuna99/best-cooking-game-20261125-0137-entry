@@ -1,75 +1,37 @@
-// Tiny WebAudio kitchen sounds, synthesised — no audio files to load. A short chop knock, a
-// ready "ding" when a station finishes, a happy two-note serve chime and a low error buzz.
-// Everything is guarded: with no AudioContext (or before the first user gesture) the kitchen
-// simply stays silent and the game plays on.
+// Tiny WebAudio kitchen sounds — no audio files, everything synthesized.
+// Chop (short noise tick), ding (station ready bell), serve (happy two-note),
+// error (low buzz), tick (last-seconds clock). All calls fail silently when
+// audio is unavailable or not yet unlocked by a user gesture.
 
-let context = null;
+let ctx = null;
 
-function ensureContext() {
-  if (context !== null) return context;
-  try {
-    const AudioCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtor) return null;
-    context = new AudioCtor();
-  } catch {
-    context = null;
+function ac() {
+  if (!ctx) {
+    try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { ctx = null; }
   }
-  return context;
+  if (ctx && ctx.state === 'suspended') ctx.resume();
+  return ctx;
 }
 
-/** Play one short tone; `slideTo` bends the pitch for knocks and buzzes. */
-function tone(frequency, seconds, type, volume, delay = 0, slideTo = null) {
-  const ctx = ensureContext();
-  if (ctx === null) return;
-  try {
-    if (ctx.state === 'suspended') ctx.resume();
-    const start = ctx.currentTime + delay;
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    oscillator.type = type;
-    oscillator.frequency.setValueAtTime(frequency, start);
-    if (slideTo !== null) oscillator.frequency.exponentialRampToValueAtTime(slideTo, start + seconds);
-    gain.gain.setValueAtTime(volume, start);
-    gain.gain.exponentialRampToValueAtTime(0.001, start + seconds);
-    oscillator.connect(gain).connect(ctx.destination);
-    oscillator.start(start);
-    oscillator.stop(start + seconds + 0.02);
-  } catch {
-    // Sound is garnish: a failed tone must never break service.
-  }
+function tone(freq, dur, type = 'sine', gain = 0.08, when = 0) {
+  const a = ac(); if (!a) return;
+  const t = a.currentTime + when;
+  const o = a.createOscillator(); const g = a.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(gain, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(a.destination);
+  o.start(t); o.stop(t + dur + 0.02);
 }
 
-export const kitchenSounds = {
-  /** Knife on the board: two quick knocks. */
-  chop() {
-    tone(210, 0.07, 'square', 0.12, 0, 120);
-    tone(190, 0.07, 'square', 0.1, 0.09, 110);
-  },
-  /** Something lands on the hot grill. */
-  sizzle() {
-    tone(1400, 0.16, 'sawtooth', 0.03, 0, 900);
-  },
-  /** A station finished: a clear bell ding. */
-  ding() {
-    tone(1318, 0.28, 'sine', 0.16);
-    tone(1975, 0.2, 'sine', 0.07, 0.02);
-  },
-  /** An ingredient lands on the plate. */
-  plate() {
-    tone(660, 0.06, 'triangle', 0.12);
-  },
-  /** A correct serve: two rising notes. */
-  serve() {
-    tone(784, 0.1, 'triangle', 0.14);
-    tone(1175, 0.16, 'triangle', 0.14, 0.09);
-  },
-  /** A wrong plate or a lost ticket. */
-  error() {
-    tone(196, 0.22, 'sawtooth', 0.1, 0, 130);
-  },
-  /** The shift bell at day's end. */
-  bell() {
-    tone(1046, 0.3, 'sine', 0.15);
-    tone(1046, 0.4, 'sine', 0.15, 0.35);
-  },
+export const sfx = {
+  chop()  { tone(220, 0.06, 'square', 0.05); tone(140, 0.05, 'square', 0.04, 0.05); },
+  sizzle() { tone(90, 0.25, 'sawtooth', 0.02); },
+  ding()  { tone(1318, 0.35, 'sine', 0.09); tone(1760, 0.3, 'sine', 0.05, 0.02); },
+  pop()   { tone(520, 0.07, 'sine', 0.06); },
+  serve() { tone(660, 0.12, 'triangle', 0.09); tone(880, 0.18, 'triangle', 0.09, 0.09); },
+  error() { tone(160, 0.22, 'sawtooth', 0.07); },
+  strike() { tone(300, 0.15, 'sawtooth', 0.08); tone(200, 0.25, 'sawtooth', 0.08, 0.12); },
+  tick()  { tone(980, 0.05, 'sine', 0.05); },
+  day()   { tone(523, 0.14, 'triangle', 0.09); tone(659, 0.14, 'triangle', 0.09, 0.12); tone(784, 0.22, 'triangle', 0.09, 0.24); },
 };

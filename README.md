@@ -2,88 +2,52 @@
 [![rank](https://make.fun/badge/best-cooking-game-20261125-0137/kizuna99/best-cooking-game-20261125-0137-entry/rank.svg)](https://make.fun/bounty/best-cooking-game-20261125-0137/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-cooking-game-20261125-0137)
 [![reward](https://make.fun/badge/best-cooking-game-20261125-0137/kizuna99/best-cooking-game-20261125-0137-entry/reward.svg)](https://make.fun/bounty/best-cooking-game-20261125-0137?utm_source=github&utm_medium=readme&utm_campaign=best-cooking-game-20261125-0137)
 
-# Sizzle & Serve — Rush Kitchen
+# Sizzle & Serve — Rush Kitchen 2.5D
 
-An original, timed order-fulfilment cooking game for the make.fun bounty
-**best-cooking-game-20261125-0137** ("Make the best cooking game", $250 pot,
-Top 10 paid). Built fresh for this bounty in `kizuna99/best-cooking-game-20261125-0137-entry`.
+A timed order-fulfilment cooking game in an **isometric 2.5D kitchen**: diamond
+floor tiles, counters extruded into boxes with front faces and drop shadows, a
+back wall with a window, jar shelf, hanging pans and a wall clock, and a chef
+who works the room between the back counter and the island — everything
+depth-sorted so the kitchen reads in true 2.5D.
 
-## The game
+Tickets land on **THE PASS** (the order board on the right). Each dish is a
+recipe of ingredients: click the ingredient bins on the island counter to build
+the dish on the plate — patties and fish must first sizzle on the **grill**,
+tomatoes must be chopped at the **board** (stations show progress bars and a
+READY! tag). Click a ticket to target it, then hit **SERVE** before its
+patience bar runs out. Fast serves earn tip bonuses and build a combo
+multiplier; expired tickets cost a strike, and 3 strikes close the kitchen. A
+150-second shift timer and a score goal per day; clear the goal and the next
+day is faster, with new recipes on the menu.
 
-Service is about to start and the tickets are already coming in. Each ticket on
-the **order board** names a dish — a Classic Sizzle Burger, a Garden Crunch
-Burger, a Reef Grill Rice Plate — and shows the exact ingredients it needs, its
-points, and a patience bar that drains in real time.
+**Controls:** mouse clicks, or keys `1–8` ingredients, `G` collect grill,
+`B` collect board, `Enter` serve, `Backspace` trash the plate, `P` pause,
+`Space` start / next day.
 
-You run the whole kitchen:
+## Run it
 
-- **Ingredient counter** (bottom): eight ingredients — bun, patty, cheese,
-  lettuce, tomato, egg, rice, fish. Click one (or press its key, 1–8) to use it.
-- **Grill** (left): patties, fish and eggs must sizzle here first. Watch the
-  progress bar; when it dings **READY**, click the grill to plate it.
-- **Chopping board** (right): tomatoes must be chopped here before plating.
-- **The pass** (centre): your plate fills layer by layer, exactly as the dish
-  will be served. Click a ticket to target it, then hit **SERVE** — or **Trash**
-  to start the plate over.
-
-Scoring rewards speed and planning: a served dish pays its price plus a **tip**
-of up to +50% scaled by the patience left on the ticket, multiplied by a
-**combo** bonus (×1.1, ×1.2, … up to ×2) for consecutive good serves. Route
-ingredients through the stations *while* you plate the instant ones, or the
-rush will bury you. Let a ticket's patience hit zero and the customer walks
-out: three strikes and the kitchen closes.
-
-Each **day** is a 150-second shift with a score goal, shown beside the big
-shift timer. Clear the goal to open the next day — new recipes join the menu,
-patience shrinks, and tickets arrive faster.
-
-## How to play
-
-| Action | Mouse | Keyboard |
-| --- | --- | --- |
-| Use an ingredient | Click its counter tile | `1`–`8` |
-| Plate a finished grill item | Click the grill | `G` |
-| Plate a finished chopped item | Click the chopping board | `B` |
-| Target a ticket | Click the ticket | — |
-| Serve the plate | Click **SERVE** | `Enter` |
-| Trash the plate | Click **Trash** | `Backspace` |
-| Pause | — | `P` |
-| Start / next day / restart | Click | `Space` |
-
-## Running it
-
-The game is plain static files under `game/` — no build step, no network.
-Serve it with the included development server (Node 22):
+The game is plain static files — no build step, no network. Serve `game/`
+with any static server, e.g.:
 
 ```sh
-node serve.ts            # then open http://localhost:8080
+node serve.ts   # then open http://localhost:8080
 ```
 
-or any static file server pointed at `game/`.
+## Hand-in
 
-## Handing it in
-
-`main.ts` (Node 22, standard library only) copies `game/` and `screenshots/`
-to the output directory and writes `dossier.json` with `buildDossier` from
-`vendor/makefun-game.ts`:
-
-```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-```
+`node main.ts` copies `game/` and `screenshots/` to `/output` (or
+`$MAKEFUN_OUTPUT_DIR`) and writes `dossier.json` via the vendored make.fun
+library in `vendor/makefun-game.ts`.
 
 ## Layout
 
-- `game/index.html` — the page and its one canvas
-- `game/src/config.js` — tuning, ingredients, recipes, kitchen layout
-- `game/src/world.js` — rules and state: orders, stations, plate, scoring, days
-- `game/src/render.js` — all canvas drawing: kitchen, tickets, food, HUD, panels
-- `game/src/input.js` — mouse hit-testing and keyboard hotkeys
-- `game/src/audio.js` — synthesised WebAudio kitchen sounds (no audio files)
-- `game/src/shots.js` — deterministic screenshot scenes (`?shot=start|play|end`)
-- `game/src/random.js` — seeded RNG so scenes and shifts are repeatable
-- `game/src/main.js` — boot and the fixed-step game loop
-- `screenshots/` — real renders of the game: start, mid-service, day cleared
+- `game/src/config.js` — tuning, ingredients, recipes, day ladder
+- `game/src/random.js` — seeded RNG (mulberry32)
+- `game/src/audio.js` — tiny WebAudio kitchen sounds (chop, ding, serve, error)
+- `game/src/world.js` — game state & rules: orders, stations, plate, scoring, days
+- `game/src/render.js` — the isometric 2.5D canvas renderer: wall, floor slab, counters, chef, tickets, HUD
+- `game/src/input.js` — mouse hit-testing + keyboard hotkeys
+- `game/src/shots.js` — deterministic screenshot scenes (`?shot=start|play|rush|end`)
+- `game/src/main.js` — boot + fixed-step loop + screens
 
-## License
-
-MIT — see `LICENSE` (SPDX-License-Identifier: MIT).
+Original idea, art and names. MIT licensed — see `LICENSE`.
